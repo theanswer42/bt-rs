@@ -278,92 +278,92 @@ class Vault:
     All methods return Result indicating success/failure.
     File operations use paths to avoid loading large files into memory.
     """
-    
+
     def __init__(self, config: VaultConfig):
         """
         Initialize vault with configuration.
-        
+
         Args:
             config: VaultConfig or derived type with vault-specific settings
         """
         self.config = config
-    
+
     def put_content(self, checksum: str, source_path: Path) -> Result:
         """
         Upload content-addressed object to vault.
-        
+
         Args:
             checksum: Content identifier (SHA-256 or similar)
             source_path: Path to file containing content to upload
-            
+
         Returns:
             Result indicating success/failure
-            
+
         Behavior:
             - Idempotent: if content with this checksum already exists, 
               operation succeeds without uploading (no-op)
             - Checksum should be verified against actual content
         """
         pass
-    
+
     def get_content(self, checksum: str, output_path: Path) -> Result:
         """
         Download content from vault by checksum.
-        
+
         Args:
             checksum: Content identifier to retrieve
             output_path: Path where content should be written
-            
+
         Returns:
             Result indicating success/failure
-            
+
         Behavior:
             - Writes content to output_path
             - Should verify checksum after download
         """
         pass
-    
+
     def put_metadata(self, host_id: str, source_path: Path) -> Result:
         """
         Upload host's metadata database to vault.
-        
+
         Args:
             host_id: Unique identifier for this host
             source_path: Path to SQLite database file to upload
-            
+
         Returns:
             Result indicating success/failure
-            
+
         Behavior:
             - Overwrites existing metadata for this host_id
             - Implementation may use versioning to keep history
         """
         pass
-    
+
     def get_metadata(self, host_id: str, output_path: Path) -> Result:
         """
         Download host's metadata database from vault.
-        
+
         Args:
             host_id: Unique identifier for this host
             output_path: Path where database should be written
-            
+
         Returns:
             Result indicating success/failure
-            
+
         Behavior:
             - Writes most recent metadata to output_path
             - Returns error if no metadata exists for host_id
         """
         pass
-    
+
     def init(self) -> Result:
         """
         Initialize vault structure (create buckets, verify access, etc.).
-        
+
         Returns:
             Result indicating success/failure
-            
+
         Behavior:
             - Idempotent: safe to call multiple times
             - Creates any necessary storage structures
@@ -378,7 +378,7 @@ class Vault:
 class FileSystemVault(Vault):
     """
     Local filesystem implementation for testing.
-    
+
     Storage structure:
         <vault_root>/
             content/<checksum>           # Content objects
@@ -393,12 +393,12 @@ class FileSystemVault(Vault):
 class S3Vault(Vault):
     """
     AWS S3 or S3-compatible storage implementation.
-    
+
     Storage structure:
         s3://<bucket>/<prefix>/
             content/<checksum>           # Content objects
             metadata/<host_id>.db        # Metadata databases
-    
+
     Features:
         - Can leverage S3 versioning for metadata history
         - Can use lifecycle policies for cold storage
@@ -431,14 +431,14 @@ class Database:
     SQLite database interface for metadata management.
     Manages Directory, File, FileSnapshot, and Content records.
     """
-    
+
     def __init__(self, db_path: Path):
         """
         Args:
             db_path: Path to SQLite database file
         """
         self.db_path = db_path
-    
+
     # Core CRUD operations for entities
     # (Specific methods will be defined during implementation)
     # Examples:
@@ -483,11 +483,11 @@ class WAL:
     Write-Ahead Log for staging backup operations.
     Maintains a persistent queue of operations that must be completed.
     """
-    
+
     def __init__(self, config: WALConfig, vault: Vault, database: Database):
         """
         Initialize WAL with configuration and dependencies.
-        
+
         Args:
             config: WAL configuration
             vault: Vault instance for uploading content
@@ -496,38 +496,38 @@ class WAL:
         self.config = config
         self.vault = vault
         self.database = database
-    
+
     def enqueue_backup(self, file: File, staged_file_path: Path, 
                        checksum: str, file_stats: FileStats) -> Result:
         """
         Add a backup operation to the queue.
-        
+
         Args:
             file: File object being backed up (contains id, directory_id, name, etc.)
             staged_file_path: Path to actual file content to upload
             checksum: Content checksum (will be used as content_id)
             file_stats: File metadata from stat
-            
+
         Returns:
             Result indicating if operation was successfully enqueued
-            
+
         Behavior:
             - Persists operation to disk immediately
             - Operation remains in queue until successfully processed
         """
         pass
-    
+
     def stage_for_backup(self, directory: Directory, file: File) -> Result:
         """
         Stage a file for backup by copying to staging area and enqueuing operation.
-        
+
         Args:
             directory: Directory object containing this file
             file: File object to stage for backup
-            
+
         Returns:
             Result indicating success/failure
-            
+
         Algorithm:
             1. Construct full file path from directory.path + file.name
             2. Get initial file stats (stat1)
@@ -538,23 +538,23 @@ class WAL:
                - Only atime should differ between stat1 and stat2
                - If other attributes changed, return error (file modified during backup)
             7. Call enqueue_backup(file, staged_path, checksum, stat2)
-            
+
         Note:
             - Staged file is cleaned up after process_next_backup() completes
             - Uses temporary UUID filename until checksum is computed
         """
         pass
-    
+
     def process_next_backup(self) -> Result:
         """
         Process the next backup operation in the queue.
-        
+
         Returns:
             Result with one of:
                 - Success: operation completed successfully
                 - Failure: operation failed (remains in queue for retry)
                 - NoWork: queue is empty
-        
+
         Behavior:
             For the next operation in queue:
             1. Upload content to vault: vault.put_content(checksum, staged_file_path)
@@ -562,19 +562,19 @@ class WAL:
             3. Update File.current_snapshot_id to new snapshot
             4. Remove staged file from <wal_path>/staging/
             5. Dequeue operation from WAL
-            
+
             Steps 4-5 only happen if steps 1-3 all succeed.
             If any step fails, operation remains in queue for retry.
         """
         pass
-    
+
     def is_staged(self, file: File) -> bool:
         """
         Check if a file has a pending operation in the WAL queue.
-        
+
         Args:
             file: File object to check
-            
+
         Returns:
             True if file has pending backup operation, False otherwise
         """
@@ -598,29 +598,31 @@ class BtService:
     High-level service orchestrating backup operations.
     Implements business logic for CLI commands.
     """
-    
-    def __init__(self, database: Database, wal: WAL):
+
+    def __init__(self, database: Database, wal: WAL, vault: Vault):
         """
-        Initialize service with database and WAL.
-        
+        Initialize service with database, WAL, and vault.
+
         Args:
             database: Database instance for metadata operations
             wal: WAL instance for staging and processing backups
+            vault: Vault instance for content storage/retrieval
         """
         self.database = database
         self.wal = wal
-    
+        self.vault = vault
+
     def find_directory_for_path(self, path: Path) -> Directory | None:
         """
         Find the Directory that should contain this path.
         Checks the path itself and all parent directories.
-        
+
         Args:
             path: Absolute path to search for
-            
+
         Returns:
             Directory object if found, None otherwise
-            
+
         Algorithm:
             1. Check if path itself is a tracked directory
             2. Check each parent directory in order
@@ -630,26 +632,52 @@ class BtService:
         directory = self.database.find_directory_by_path(path)
         if directory:
             return directory
-        
+
         # Check parent directories
         for dirname in path.parents:
             directory = self.database.find_directory_by_path(dirname)
             if directory:
                 return directory
-        
+
         return None
-    
+
+    def resolve_path(self, path: Path) -> tuple[Directory | None, File | None]:
+        """
+        Resolve an absolute path to its Directory and File records.
+
+        Args:
+            path: Absolute path to file
+
+        Returns:
+            Tuple of (directory, file) where either may be None
+            - (None, None): No tracked directory contains this path
+            - (directory, None): Path is in tracked directory but file not in database
+            - (directory, file): Both directory and file found
+
+        Algorithm:
+            1. Find containing directory: directory = find_directory_for_path(path.parent)
+            2. If no directory found, return (None, None)
+            3. Calculate relative path: relative_path = path.relative_to(directory.path)
+            4. Look up file: file = database.get_file(directory, relative_path)
+            5. Return (directory, file)
+
+        Note:
+            - Assumes path is absolute
+            - File may be None if not yet tracked in database
+        """
+        pass
+
     def should_ignore(self, directory: Directory, path: Path) -> bool:
         """
         Determine if a file should be ignored based on configuration.
-        
+
         Args:
             directory: Directory containing the file
             path: Absolute path to file
-            
+
         Returns:
             True if file should be ignored, False otherwise
-            
+
         Note:
             Implementation will check:
             - Global ignore patterns from config
@@ -657,178 +685,230 @@ class BtService:
             - Details to be determined during implementation
         """
         pass
-    
+
     def add_directory(self, path: Path) -> Result:
         """
         Track a directory for backup (implements `bt init`).
-        
+
         Args:
             path: Absolute path to directory to track
-            
+
         Returns:
             Result indicating success/failure
-            
+
         Algorithm:
             1. Check permissions: user must have at least r+x on directory
                - If insufficient permissions, return failure
-            
+
             2. Check if directory or any parent is already tracked:
                - Use find_directory_for_path(path)
                - If found, return success (no-op)
-            
+
             3. Begin database transaction:
                a. Create directory: directory = database.create_directory(path)
-               
+
                b. Consolidate any previously-tracked subdirectories:
                   - Find all subdirs: database.find_directories_by_path_prefix(path)
                   - For each subdir:
                       - Move files: database.move_files(source_dir=subdir, dest_dir=directory)
                         (Updates File.name to include relative path and File.directory_id to new directory)
                       - Delete old directory: database.delete_directory(subdir)
-               
+
                c. Commit transaction
-            
+
             4. Return success
-            
+
         Note:
             - Operation is idempotent
             - All database operations are within a transaction
             - File snapshots and content remain unchanged during consolidation
         """
         pass
-    
+
     def stage_file(self, path: Path) -> Result:
         """
         Stage a file for backup (implements `bt add filename`).
-        
+
         Args:
             path: Absolute path to file (fully resolved by CLI)
-            
+
         Returns:
             Result indicating success/failure
-            
+
         Algorithm:
             1. Verify path is a regular file (not directory, symlink, etc.):
                - If not a regular file, return failure
-            
+
             2. Find containing directory:
                - directory = find_directory_for_path(path.parent)
                - If not found, return failure (directory not tracked)
-            
+
             3. Check if file should be ignored:
                - If should_ignore(directory, path), return success (no-op)
                - Respects global config and .btignore files (implementation detail)
-            
+
             4. Get or create File record:
                - file = database.find_or_create_file(directory, path)
                - File.name is relative path from directory
-            
+
             5. Stage for backup:
                - return wal.stage_for_backup(directory, file)
-            
+
         Note:
             - Assumes path is fully resolved (no relative paths like '.')
             - Only handles regular files (not directories or symlinks)
             - Idempotent: safe to call multiple times for same file
         """
         pass
-    
+
     def file_modified_since_backup(self, directory: Directory, file: File) -> bool:
         """
         Check if file has been modified since last backup.
-        
+
         Args:
             directory: Directory containing the file
             file: File object to check
-            
+
         Returns:
             True if file has been modified since last backup, False otherwise
-            
+
         Note:
             Compares current filesystem metadata with file.current_snapshot
             Implementation details to be determined
         """
         pass
-    
+
     def get_file_status(self, directory: Directory, relative_path: str) -> FileStatus:
         """
         Get the backup status of a specific file.
-        
+
         Args:
             directory: Directory containing the file
             relative_path: Path relative to directory
-            
+
         Returns:
             FileStatus enum value
-            
+
         Algorithm:
             1. Check if file should be ignored:
                - full_path = directory.path / relative_path
                - If should_ignore(directory, full_path), return FileStatus.IGNORED
-            
+
             2. Get file record:
                - file = database.get_file(directory, relative_path)
                - If not found, return FileStatus.UNTRACKED
-            
+
             3. Check if file has been modified since backup:
                - If file_modified_since_backup(directory, file), return FileStatus.MODIFIED
                - (MODIFIED takes precedence over STAGED)
-            
+
             4. Check if file is staged for backup:
                - If wal.is_staged(file), return FileStatus.STAGED
-            
+
             5. Check if file has been backed up:
                - If not file.current_snapshot_id, return FileStatus.UNTRACKED
                - (File record exists but first backup never completed)
-            
+
             6. Return FileStatus.BACKED_UP
-            
+
         Note:
             - FileStatus.DELETED not applicable here (for files that exist in filesystem)
             - Precedence: IGNORED > MODIFIED > STAGED > BACKED_UP/UNTRACKED
         """
         pass
-    
+
     def get_directory_status(self, path: Path) -> DirectoryStatus:
         """
         Get status of tracked directory (implements `bt status`).
-        
+
         Args:
             path: Path to tracked directory
-            
+
         Returns:
             DirectoryStatus with information about backed up, staged, and untracked files
-            
+
         Note:
             Implementation will traverse filesystem and call get_file_status for each file.
             DirectoryStatus structure to be defined during implementation.
         """
         pass
-    
-    def get_file_history(self, filename: str) -> FileHistory:
+
+    def get_file_history(self, path: Path) -> FileHistory | None:
         """
         Get version history for a file (implements `bt log filename`).
-        
+
         Args:
-            filename: Relative path within tracked directory
-            
+            path: Absolute path to file
+
         Returns:
-            FileHistory with list of snapshots and their metadata
+            FileHistory with list of snapshots and their metadata, or None if not found
+
+        Algorithm:
+            1. Resolve path to directory and file:
+               - directory, file = resolve_path(path)
+            2. If directory or file not found, return None
+            3. Get file snapshots:
+               - return database.get_file_snapshots_for_file(file, order_by="created_at")
+
+        Note:
+            - Returns None if file is not in a tracked directory or not in database
+            - FileHistory structure to be defined during implementation
         """
         pass
-    
-    def restore_file(self, filename: str, version: timestamp | None = None,
-                     restore_metadata: bool = True) -> Result:
+
+    def restore_file(self, path: Path, checksum: str) -> Result:
         """
-        Restore a file from backup (implements `bt restore filename`).
-        
+        Restore a file from backup (implements `bt restore filename --checksum=<checksum>`).
+
         Args:
-            filename: Relative path within tracked directory
-            version: Optional timestamp to restore specific version (None = latest)
-            restore_metadata: Whether to restore file metadata (permissions, timestamps, etc.)
-            
+            path: Absolute path to file
+            checksum: Content checksum identifying which version to restore
+
         Returns:
             Result indicating success/failure
+
+        Algorithm:
+            1. Resolve path to directory and file:
+               - directory, file = resolve_path(path)
+            2. If directory or file not found, return failure
+            3. Find file snapshot by checksum:
+               - file_snapshot = database.find_file_snapshot_by_checksum(file, checksum)
+            4. If file_snapshot not found, return failure
+            5. Restore the file:
+               - return restore_file_at(file_snapshot, path)
+
+        Note:
+            - Restored file will have a name derived from checksum (e.g., filename.txt.<checksum>)
+            - Additional capabilities (restore by timestamp, metadata control) can be added later
+        """
+        pass
+
+    def restore_file_at(self, file_snapshot: FileSnapshot, original_path: Path) -> Result:
+        """
+        Restore a specific file snapshot to disk.
+
+        Args:
+            file_snapshot: FileSnapshot to restore
+            original_path: Original path of the file (used to derive restore path)
+
+        Returns:
+            Result indicating success/failure
+
+        Algorithm:
+            1. Construct restore path:
+               - restore_path = original_path.parent / f"{original_path.name}.{file_snapshot.content_id}"
+            2. Download content from vault:
+               - result = vault.get_content(file_snapshot.content_id, restore_path)
+            3. If download fails, return failure
+            4. Restore file metadata:
+               - Set permissions to file_snapshot.permissions
+               - Set uid/gid to file_snapshot.uid/gid
+               - Set timestamps (mtime to file_snapshot.modified_at, etc.)
+            5. Return success
+
+        Note:
+            - Creates file with checksum suffix to avoid overwriting original
+            - Metadata restoration may fail if user lacks permissions (acceptable)
         """
         pass
 ```
