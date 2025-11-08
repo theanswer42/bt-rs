@@ -236,12 +236,31 @@ This is all the config needed for `bt`
 @dataclass
 class Config:
   host_id: UUID     # generated during `bt config init`
+
   base_dir: Path    # defaults to `$HOME/data/bt`
   log_dir: Path     # defaults to `$BT_BASE_DIR/log`
-  data_dir: Path    # defaults to `$BT_BASE_DIR/data`
-  staging_dir: Path # defaults to `$BT_BASE_DIR/staging`
+
   vaults: List[VaultConfig] # Configured vaults
-  ignore_list: List[str]    # global list of file patterns to ignore
+
+  dbconfig: DatabaseConfig
+  stage_config: StagingConfig
+  fsmgr_config: FsManagerConfig
+
+
+@dataclass
+class DatabaseConfig:
+  host_id: UUID
+  data_dir: Path    # defaults to `$BT_BASE_DIR/data`
+
+@dataclass
+class StagingConfig:
+  host_id: UUID
+  staging_dir: Path # defaults to `$BT_BASE_DIR/staging`
+
+@dataclass
+class FsManagerConfig:
+  host_id: UUID
+  ignore_list: List[str] # global list of file patterns to ignore
 
 ```
 
@@ -260,15 +279,17 @@ class ConfigManager:
 @dataclass
 class VaultConfig:
   host_id: UUID
+  name: str
 
 ```
 
-### S3VaultConfig
-This is an example of the VaultConfig:
+**VaultConfig Implementations:**
+
 ```python
 @dataclass
 class S3VaultConfig(VaultConfig):
   host_id: UUID
+  name: str
   content_bucket: str
   content_bucket_prefix: str
   content_bucket_key: str
@@ -277,7 +298,6 @@ class S3VaultConfig(VaultConfig):
   metadata_bucket_key: str
 ```
 
-### FileSystemVaultConfig
 ```python
 @dataclass
 class FileSystemVaultConfig(VaultConfig):
@@ -295,173 +315,67 @@ class Vault:
     File operations use paths to avoid loading large files into memory.
     """
 
-    def __init__(self, config: VaultConfig):
-        """
-        Initialize vault with configuration.
-
-        Args:
-            config: VaultConfig or derived type with vault-specific settings
-        """
-        self.config = config
-
-    def put_content(self, checksum: str, source_path: Path) -> Result:
-        """
-        Upload content-addressed object to vault.
-
-        Args:
-            checksum: Content identifier (SHA-256 or similar)
-            source_path: Path to file containing content to upload
-
-        Returns:
-            Result indicating success/failure
-
-        Behavior:
-            - Idempotent: if content with this checksum already exists, 
-              operation succeeds without uploading (no-op)
-            - Checksum should be verified against actual content
-        """
-        pass
-
-    def get_content(self, checksum: str, output_path: Path) -> Result:
-        """
-        Download content from vault by checksum.
-
-        Args:
-            checksum: Content identifier to retrieve
-            output_path: Path where content should be written
-
-        Returns:
-            Result indicating success/failure
-
-        Behavior:
-            - Writes content to output_path
-            - Should verify checksum after download
-        """
-        pass
-
-    def put_metadata(self, host_id: str, source_path: Path) -> Result:
-        """
-        Upload host's metadata database to vault.
-
-        Args:
-            host_id: Unique identifier for this host
-            source_path: Path to SQLite database file to upload
-
-        Returns:
-            Result indicating success/failure
-
-        Behavior:
-            - Overwrites existing metadata for this host_id
-            - Implementation may use versioning to keep history
-        """
-        pass
-
-    def get_metadata(self, host_id: str, output_path: Path) -> Result:
-        """
-        Download host's metadata database from vault.
-
-        Args:
-            host_id: Unique identifier for this host
-            output_path: Path where database should be written
-
-        Returns:
-            Result indicating success/failure
-
-        Behavior:
-            - Writes most recent metadata to output_path
-            - Returns error if no metadata exists for host_id
-        """
-        pass
-
-    def init(self) -> Result:
-        """
-        Initialize vault structure (create buckets, verify access, etc.).
-
-        Returns:
-            Result indicating success/failure
-
-        Behavior:
-            - Idempotent: safe to call multiple times
-            - Creates any necessary storage structures
-            - Verifies credentials/permissions
-        """
-        pass
+    def __init__(self, config: VaultConfig):...
+    def put_content(self, checksum: str, source_path: Path) -> bool:...
+    def get_content(self, checksum: str, output_path: Path) -> bool:...
+    def put_metadata(self, source_path: Path) -> bool:...
+    def get_metadata(self, output_path: Path) -> bool:...
+    def validate_setup(self) -> bool:...
 ```
 
 **Vault Implementations:**
 
 ```python
 class FileSystemVault(Vault):
-    """
-    Local filesystem implementation for testing.
-
-    Storage structure:
-        <vault_root>/
-            content/<checksum>           # Content objects
-            metadata/<host_id>.db        # Metadata databases
-    """
-    def __init__(self, config: FileSystemVaultConfig):
-        super().__init__(config)
-        self.vault_root = config.vault_root
-        self.content_dir = self.vault_root / "content"
-        self.metadata_dir = self.vault_root / "metadata"
+    def __init__(self, config: FileSystemVaultConfig):...
 
 class S3Vault(Vault):
-    """
-    AWS S3 or S3-compatible storage implementation.
+    def __init__(self, config: S3VaultConfig):...
 
-    Storage structure:
-        s3://<bucket>/<prefix>/
-            content/<checksum>           # Content objects
-            metadata/<host_id>.db        # Metadata databases
-
-    Features:
-        - Can leverage S3 versioning for metadata history
-        - Can use lifecycle policies for cold storage
-        - Supports S3-compatible services (MinIO, Backblaze B2, etc.)
-    """
-    def __init__(self, config: S3VaultConfig):
-        super().__init__(config)
-        self.bucket = config.bucket
-        self.prefix = config.prefix
-        self.region = config.region
-        # Initialize S3 client with credentials
 ```
 
-#### Local State Management
-
-**Configuration:**
-- Location: `~/.config/bt.toml` (configurable)
-- Contains: vault settings, credentials, local paths
-
-**Metadata Database:**
-- Location: `~/data/bt/db/metadata.db` (configurable)
-- Format: SQLite database
-- Contains: Directory, File, FileSnapshot, Content tables
-- Updated locally during operations
-- Uploaded to vault after successful backup
+### Metadata Store
+This wraps around an SQLite3 database.
 
 ```python
 class Database:
-    """
-    SQLite database interface for metadata management.
-    Manages Directory, File, FileSnapshot, and Content records.
-    """
+    def __init__(self, config: DatabaseConfig):...
+    def find_directory_by_path(self, path: Path) -> Directory: ...
+    def search_directory_for_path(self, path: Path) -> Directory: ...
+    def find_file_by_path(self, directory: Directory, path: Path) -> File:...
+    def find_or_create_file(self, directory: Directory, path: Path) -> File:...
 
-    def __init__(self, db_path: Path):
-        """
-        Args:
-            db_path: Path to SQLite database file
-        """
-        self.db_path = db_path
+    def create_directory(self, path: Path) -> Directory:...
+    def find_directories_by_path_prefix(self, path_prefix: Path) -> List[Directory]:...
+    def move_files(self, source_dir: Directory, dest_dir: Directory) -> bool:...
+    def delete_directory(self, directory: Directory) -> bool:...
 
-    # Core CRUD operations for entities
-    # (Specific methods will be defined during implementation)
-    # Examples:
-    # - create_directory(path: Path) -> Directory
-    # - get_file(directory_id: UUID, name: str) -> File
-    # - create_file_snapshot(file_id: UUID, content_id: str, stats: FileStats) -> FileSnapshot
-    # - update_file_current_snapshot(file_id: UUID, snapshot_id: UUID) -> Result
+    def find_file_snapshots_for_file(self, file: File) -> List[FileSnapshot]:...
+    def find_file_snapshot_by_checksum(self, file: File, checksum: str) -> FileSnapshot:...
+
+```
+
+### Staging Area
+This stages files to be backed up.
+
+```python
+class StagingArea:
+    def __init__(self, config: StagingConfig):...
+    def stage_for_backup(self, directory: Directory, file: File, file_snapshot: FileSnapshot) -> bool
+    def get_next_staged_operation(self) -> (file: File, file_snapshot: FileSnapshot, staged_file_path: Path):...
+    def is_staged(self, file: File) -> bool:...
+    
+
+```
+
+
+### Filesystem Manager
+This abstracts all filesystem/path related operations
+
+```python
+class FilesystemManager:
+    def __init__(self, config: FsManagerConfig):...
+
 ```
 
 **Staging Area (WAL):**
