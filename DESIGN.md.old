@@ -1,6 +1,6 @@
 # Backup Tool (bt) - Design Document
 
-## Goals and Non-Goals
+## 1. Goals and Non-Goals
 
 ### Goals
 - Provide a robust personal backup solution for files across multiple computers
@@ -15,15 +15,14 @@
 - Not designed for team or organizational use (single user per host)
 - Not implementing incremental or differential backups initially (full backups only)
 - Not providing real-time synchronization across hosts
-- Not a version control system (no branching, merging, needing to
-  record each change etc.)
+- Not a version control system (no branching, merging, etc.)
 
-## External Dependencies
+## 2. External Dependencies
 
 ### Storage (Vault)
-`bt` will use an external storage backend for content and metadata
-backups. Each should implement the "Vault" abstraction, which
-provides:
+The system depends on a storage backend abstraction called a "Vault" which must provide:
+
+**Required Capabilities:**
 - **Content Storage**: Ability to store and retrieve content-addressed objects (identified by content checksum)
   - May be cold storage (e.g., S3 Glacier)
   - Must support idempotent writes (duplicate checksums are safely ignored)
@@ -31,9 +30,10 @@ provides:
   - Must be identified by host ID
   - Should support versioning or ability to keep multiple versions
 
-**Initial Implementations:**
+**Example Implementations:**
 - Local filesystem (for testing)
 - AWS S3 or S3-compatible storage (primary use case)
+- Other cloud object storage (Azure Blob, Google Cloud Storage, Backblaze B2)
 
 ### Host System Requirements
 The backup tool requires the following from the host system:
@@ -42,7 +42,7 @@ The backup tool requires the following from the host system:
 - SQLite support for local metadata management
 - File watcher capabilities (for future daemon implementation)
 
-## Risks and Open Questions
+## 3. Risks and Open Questions
 
 ### Known Risks
 1. **Large File Handling**: Strategy for handling very large files (e.g., 50GB+ files) is not yet defined
@@ -73,9 +73,9 @@ The backup tool requires the following from the host system:
    - Content is idempotent (safe)
    - Need protection mechanisms or just accept last-write-wins for rare edge cases?
 
-## Interface
+## 4. Interface
 
-The backup tool provides a command-line interface (CLI) called `bt`.
+The backup tool provides a command-line interface (CLI) called `bt`. The tool runs on a per-user basis on each host.
 
 ### Configuration Management
 
@@ -83,7 +83,7 @@ The backup tool provides a command-line interface (CLI) called `bt`.
 ```bash
 bt config init
 ```
-Creates configuration file in `~/.config/bt.toml`.
+Creates configuration file in `~/.config/bt.toml` with vault settings (bucket, storage prefix, access credentials, etc.).
 
 #### View Configuration
 ```bash
@@ -95,7 +95,7 @@ Displays current configuration settings.
 
 #### Initialize Vault
 ```bash
-bt config vault init
+bt vault init
 ```
 Performs any necessary setup on the vault (e.g., creating bucket structure, verifying access).
 
@@ -103,11 +103,9 @@ Performs any necessary setup on the vault (e.g., creating bucket structure, veri
 
 #### Track a Directory
 ```bash
-bt dir init
+bt init
 ```
-- Must be run within the directory to track.
-- Marks this directory for backup (does not perform any actual backup
-  operations)
+Must be run within the directory to track. Marks this directory for backup without performing actual backup operations. Creates a Directory record in metadata.
 
 ### Backup Operations
 
@@ -117,21 +115,27 @@ bt add [FILENAME]
 ```
 - Must be called within a tracked directory
 - If FILENAME omitted, defaults to `.` (current directory)
-- stages files for backup
+- Scans and stages files for backup (synchronous operation)
+- Calculates checksums and prepares operations in staging area (WAL)
+- Does not upload to vault yet
 
 #### Execute Backup
 ```bash
 bt backup
 ```
 - Host-level command (not scoped to current directory)
-- Processes all staged operations
+- Processes all staged operations from WAL
+- Uploads content to vault
+- Updates metadata database
+- Uploads metadata database to vault
+- Clears completed operations from WAL
 - Can be run manually or by daemon process
 
 ### Status and Inspection
 
 #### View Directory Status
 ```bash
-bt dir status
+bt status
 ```
 Shows current state of files in the current tracked directory:
 - Which files have been backed up
@@ -161,131 +165,111 @@ bt restore FILENAME [OPTIONS]
 - By default restores full metadata (permissions, ownership, timestamps)
 - Option to restore content only without metadata
 
-## Data Model
+### Background Operations (Future)
+
+A daemon process will run in the background and:
+- Periodically execute `bt backup` operations (e.g., every 15 minutes)
+- Watch for file changes using file watchers (implementation TBD)
+- Automatically stage changed files for backup
+
+## 5. Design
+
+### Data Model
 
 The system uses the following core entities:
 
-**Note on Identifiers:** All entity IDs are UUIDs except for
-Content.id, which is the checksum (SHA-256 or similar) of the content
-itself, enabling content-addressable storage.
+**Note on Identifiers:** All entity IDs are UUIDs except for Content.id, which is the checksum (SHA-256 or similar) of the content itself, enabling content-addressable storage.
 
-### Content
+#### Content
+```
 Content:
-- id: checksum (SHA-256 or similar) - not a UUID
-- created_at: timestamp (for bookkeeping)
-
-The actual content is stored in the configured vault. A content object
-should only be created *after* that content has been successfully
-stored in the vault.
-
-The ID is the content's own checksum, enabling:
+  - id: checksum (SHA-256 or similar) - not a UUID
+  - created_at: timestamp (for bookkeeping)
+  - (actual content stored in vault)
+```
+Represents immutable file content. The ID is the content's own checksum, enabling:
 - Content-addressable storage
 - Automatic deduplication across all hosts
 - Integrity verification
 
-### Directory
+#### Directory
+```
 Directory:
-- id: UUID
-- path: absolute path on host
-- created_at: timestamp
+  - id: UUID
+  - path: absolute path on host
+  - created_at: timestamp
+```
+Represents a directory tracked for backup. Created when `bt init` is run. The directory exists within the context of the host, so no explicit host_id is needed.
 
-Represents a directory tracked for backup. Created when `bt dir init`
-is run.
-
-### File
-
+#### File
+```
 File:
-- id: UUID
-- name: relative path within directory
-- directory_id: UUID (foreign key to Directory)
-- current_snapshot_id: UUID (foreign key to current FileSnapshot)
-- deleted: boolean flag
+  - id: UUID
+  - name: relative path within directory
+  - directory_id: UUID (foreign key to Directory)
+  - current_snapshot_id: UUID (foreign key to current FileSnapshot)
+  - deleted: boolean flag
+```
+Represents a file within a tracked directory. The `name` is the relative path, so subdirectories are flattened (e.g., `subdir/file.txt`).
 
-Represents a file within a tracked directory.
-The `name` is the relative path within the directory.
-
-### FileSnapshot
-
+#### FileSnapshot
+```
 FileSnapshot:
-- id: UUID
-- file_id: UUID (foreign key to File)
-- content_id: checksum (foreign key to Content)
-- created_at: timestamp (when snapshot was created)
-- size: file size in bytes
-- permissions: file mode/permissions
-- uid: user ID
-- gid: group ID
-- accessed_at: file access time (atime from stat)
-- modified_at: file modification time (mtime from stat)
-- changed_at: metadata change time (ctime from stat)
-- born_at: file creation time (birthtime from stat, if available)
-
-Represents the state of a file at a specific point in time. Each file
-has one current snapshot and may have several older snapshots.
-
-
-## System Architecture
-This section describes various types, abstractions and interfaces, and
-how they all interact.
-We will use python-like pseudo-code to describe types and algorithms.
-
-### Config
-This is all the config needed for `bt`
-
-```python
-@dataclass
-class Config:
-  host_id: UUID     # generated during `bt config init`
-  base_dir: Path    # defaults to `$HOME/data/bt`
-  log_dir: Path     # defaults to `$BT_BASE_DIR/log`
-  data_dir: Path    # defaults to `$BT_BASE_DIR/data`
-  staging_dir: Path # defaults to `$BT_BASE_DIR/staging`
-  vaults: List[VaultConfig] # Configured vaults
-  ignore_list: List[str]    # global list of file patterns to ignore
-
+  - id: UUID
+  - file_id: UUID (foreign key to File)
+  - content_id: checksum (foreign key to Content)
+  - created_at: timestamp (when snapshot was created)
+  - size: file size in bytes
+  - permissions: file mode/permissions
+  - uid: user ID
+  - gid: group ID
+  - accessed_at: file access time (atime from stat)
+  - modified_at: file modification time (mtime from stat)
+  - changed_at: metadata change time (ctime from stat)
+  - born_at: file creation time (birthtime from stat, if available)
 ```
+Represents the state of a file at a specific point in time. Each file has one current snapshot and a history of older snapshots.
 
-### ConfigManager
-Handles reading from and writing to the config file,
-`$HOME/.config/bt.toml`
-```python
-class ConfigManager:
-  def init(self, config_path="$HOME/.config/bt.toml"): ...
-  def write_config(self, Config): ...
-  def read_config(self) -> Config: ...
-```
+### Storage Architecture
 
-### VaultConfig
+#### Vault Abstraction
+
+**Configuration:**
+
 ```python
-@dataclass
 class VaultConfig:
-  host_id: UUID
+    """
+    Base configuration for vault implementations.
+    Specific vault types should extend this with their own parameters.
+    """
+    def __init__(self, host_id: str):
+        """
+        Args:
+            host_id: Unique identifier for this host (UUID)
+        """
+        self.host_id = host_id
 
-```
-
-### S3VaultConfig
-This is an example of the VaultConfig:
-```python
-@dataclass
-class S3VaultConfig(VaultConfig):
-  host_id: UUID
-  content_bucket: str
-  content_bucket_prefix: str
-  content_bucket_key: str
-  metadata_bucket: str
-  metadata_bucket_prefix: str
-  metadata_bucket_key: str
-```
-
-### FileSystemVaultConfig
-```python
-@dataclass
 class FileSystemVaultConfig(VaultConfig):
-  host_id: UUID
-  vault_root: Path
+    """Configuration for filesystem-based vault."""
+    def __init__(self, host_id: str, vault_root: Path):
+        super().__init__(host_id)
+        self.vault_root = vault_root
+
+class S3VaultConfig(VaultConfig):
+    """Configuration for S3-based vault."""
+    def __init__(self, host_id: str, bucket: str, prefix: str, 
+                 region: str, access_key: str, secret_key: str):
+        super().__init__(host_id)
+        self.bucket = bucket
+        self.prefix = prefix
+        self.region = region
+        self.access_key = access_key
+        self.secret_key = secret_key
 ```
 
-### Vault
+**Vault Interface:**
+
+The vault provides a storage abstraction with the following interface:
 
 ```python
 class Vault:
